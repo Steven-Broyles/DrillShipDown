@@ -1,0 +1,32 @@
+[gd_scene format=3 uid="uid://bumljw8rc323g"]
+
+[ext_resource type="Script" uid="uid://dpspnbrv8eqcf" path="res://scenes/drill_ship.gd" id="1_ln01f"]
+[ext_resource type="Texture2D" uid="uid://dhxmfes77405j" path="res://assets/drillship_hull.png" id="2_geku8"]
+
+[sub_resource type="CapsuleShape2D" id="CapsuleShape2D_b0j75"]
+radius = 5.0
+height = 24.0
+
+[node name="DrillShip" type="CharacterBody2D" unique_id=1316463290]
+script = ExtResource("1_ln01f")
+bore_radius = 10.0
+
+[node name="Sprite2D" type="Sprite2D" parent="." unique_id=1305416125]
+scale = Vector2(0.96875, 0.8888889)
+texture = ExtResource("2_geku8")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="." unique_id=984662800]
+rotation = 1.5707964
+shape = SubResource("CapsuleShape2D_b0j75")
+
+[node name="DrillPivot" type="Node2D" parent="." unique_id=595418858]
+
+[node name="DrillHead" type="ColorRect" parent="DrillPivot" unique_id=1739401710]
+offset_left = 11.0
+offset_top = -2.0
+offset_right = 20.0
+offset_bottom = 2.0
+color = Color(0.34781712, 0.3478169, 0.34781685, 1)
+
+[node name="RayCast2D" type="RayCast2D" parent="DrillPivot" unique_id=1856440617]
+target_position = Vector2(18, 0)

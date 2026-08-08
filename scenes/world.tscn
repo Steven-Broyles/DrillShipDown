@@ -1,0 +1,15 @@
+[gd_scene format=3 uid="uid://ciif7jwa57h3i"]
+
+[ext_resource type="PackedScene" uid="uid://755y4youahtb" path="res://scenes/terrain.tscn" id="1_rwgxs"]
+[ext_resource type="PackedScene" uid="uid://bumljw8rc323g" path="res://scenes/drill_ship.tscn" id="2_4wyf3"]
+
+[node name="World" type="Node2D" unique_id=872900095]
+
+[node name="TileMapLayer" parent="." unique_id=214181872 instance=ExtResource("1_rwgxs")]
+ship_path = NodePath("../DrillShip")
+
+[node name="DrillShip" parent="." unique_id=1316463290 instance=ExtResource("2_4wyf3")]
+position = Vector2(64, -80)
+
+[node name="Camera2D" type="Camera2D" parent="DrillShip" unique_id=1253820513]
+zoom = Vector2(2, 2)
