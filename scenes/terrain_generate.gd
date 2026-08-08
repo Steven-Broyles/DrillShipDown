@@ -65,7 +65,7 @@ func generate() -> void:
 	if tile_set == null or tile_set.get_source_count() == 0:
 		push_error("terrain_generate: no TileSet source on this layer")
 		return
-	var source: int = tile_set.get_source_id(0)   # first source, whatever its ID
+	_source = tile_set.get_source_id(0)           # first source, whatever its ID
 
 	_cave.seed = world_seed
 	_cave.noise_type = FastNoiseLite.TYPE_SIMPLEX
@@ -74,7 +74,6 @@ func generate() -> void:
 	_vein.seed = world_seed + 991
 	_vein.noise_type = FastNoiseLite.TYPE_SIMPLEX
 	_vein.frequency = 0.05
-	_source = tile_set.get_source_id(0)
 
 	var half := width / 2
 
@@ -105,6 +104,24 @@ func generate() -> void:
 					tile = ORE
 
 			set_cell(Vector2i(x, y), _source, tile)
+
+	print("terrain: generated ", get_used_cells().size(), " cells, source ", _source)
+
+
+# --- terrain interface ------------------------------------------------------
+# Everything the ship needs from terrain goes through sample() and carve().
+# Any future terrain backend only has to provide these two methods.
+
+func sample(global_pos: Vector2) -> Dictionary:
+	var td := get_cell_tile_data(local_to_map(to_local(global_pos)))
+	if td == null:
+		return {}                             # open space
+	return {
+		"hardness": float(td.get_custom_data("hardness")),
+		"tier": int(td.get_custom_data("tier")),
+	}
+
+
 func carve(center_global: Vector2, radius: float) -> void:
 	var local := to_local(center_global)
 	var cell := tile_set.tile_size
@@ -152,5 +169,3 @@ func _restore(s: Dictionary) -> void:
 		_scars.append(s)
 		return
 	set_cell(c, _source, s["tile"])
-	
-	print("terrain: generated ", get_used_cells().size(), " cells, source ", _source)

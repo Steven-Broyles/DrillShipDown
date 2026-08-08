@@ -1,6 +1,6 @@
 extends CharacterBody2D
 
-signal tile_drilled(coords: Vector2i)
+signal drilled(global_pos: Vector2, hardness: float, tier: int)
 
 # --- movement ---
 @export var drive_speed: float = 170.0
@@ -26,6 +26,7 @@ signal tile_drilled(coords: Vector2i)
 @export var drill_power: float = 1.0
 @export var drill_tier: int = 1
 @export var bore_radius: float = 14.0
+@export var probe_depth: float = 2.0      # how far past the surface to sample
 @export var debug_drill: bool = false
 
 # --- heat (stub) ---
@@ -123,33 +124,31 @@ func _drill(delta: float) -> void:
 		_dig_progress = 0.0
 		return
 
-	var layer := ray.get_collider() as TileMapLayer
-	if layer == null:
+	var terrain := ray.get_collider()
+	if terrain == null or not terrain.has_method("sample"):
 		_dig_progress = 0.0
 		return
 
-	# nudge half a cell past the surface, into the tile we hit
-	var cell_px := float(mini(layer.tile_set.tile_size.x, layer.tile_set.tile_size.y))
-	var probe := ray.get_collision_point() - ray.get_collision_normal() * (cell_px * 0.5)
-	var coords := layer.local_to_map(layer.to_local(probe))
-	var data := layer.get_cell_tile_data(coords)
-	if data == null:
+	# step just past the surface, into the material we hit
+	var probe := ray.get_collision_point() - ray.get_collision_normal() * probe_depth
+	var info: Dictionary = terrain.sample(probe)
+	if info.is_empty():
 		_dig_progress = 0.0
 		return
 
-	var hardness: float = data.get_custom_data("hardness")
+	var hardness: float = info["hardness"]
 	if hardness < 0.0:
 		_dig_progress = 0.0          # gate rock: no bite, so no thrust either
 		return
 
-	var rock_tier: int = data.get_custom_data("tier")
+	var rock_tier: int = info["tier"]
 	_is_boring = true
 
 	if debug_drill:
-		print("cell ", coords, "  hardness ", hardness, "  tier ", rock_tier)
+		print("probe ", probe, "  hardness ", hardness, "  tier ", rock_tier)
 
 	_dig_progress += _dig_rate(rock_tier) * delta
 	if _dig_progress >= hardness:
-		layer.carve(probe, bore_radius)
-		tile_drilled.emit(coords)
+		terrain.carve(probe, bore_radius)
+		drilled.emit(probe, hardness, rock_tier)
 		_dig_progress = 0.0
