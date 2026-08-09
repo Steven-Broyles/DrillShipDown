@@ -9,6 +9,9 @@ signal drilled(global_pos: Vector2, hardness: float, tier: int)
 @export var coast_drag: float = 250.0
 @export var gravity: float = 900.0
 @export var max_fall_speed: float = 600.0
+## Gravity multiplier while the drill is held but has nothing to bite — i.e.
+## crossing a tunnel you already cut. 0 = fully weightless, 1 = normal fall.
+@export var open_gravity_scale: float = 0.35
 @export var climb_penalty: float = 0.45   # dig rate boring straight up
 @export var descent_bonus: float = 1.25   # dig rate boring straight down
 
@@ -92,10 +95,11 @@ func _physics_process(delta: float) -> void:
 	_update_tilt(delta)
 	_drill(delta)
 
-	_dbg_t += delta
-	if _dbg_t >= 0.25:
-		_dbg_t = 0.0
-		print(_dbg)
+	if debug_drill:
+		_dbg_t += delta
+		if _dbg_t >= 0.25:
+			_dbg_t = 0.0
+			print(_dbg)
 
 	if _is_boring:
 		# the bit has bitten rock — it pulls the ship in and holds it against gravity
@@ -105,6 +109,14 @@ func _physics_process(delta: float) -> void:
 		# contact adds a sideways slide that accumulates, and the hull wanders
 		# off the centreline of its own tunnel until a wall catches it.
 		velocity = velocity.lerp(h * velocity.dot(h), clampf(bore_axis_lock * delta, 0.0, 1.0))
+	elif Input.is_action_pressed("drill"):
+		# Drill held, but nothing to bite — we've broken into open space, almost
+		# always a tunnel cut earlier. The bit can't pull the ship along without
+		# rock, but handing this to full gravity turns every tunnel crossing
+		# into a 600px/s plunge. Coast instead: reduced gravity, momentum
+		# preserved, and hard-capped at bore speed so nothing runs away.
+		velocity.y += gravity * open_gravity_scale * delta
+		velocity = velocity.limit_length(bore_speed)
 	else:
 		velocity.y += gravity * delta
 		velocity.y = minf(velocity.y, max_fall_speed)
@@ -159,6 +171,14 @@ func steer_progress() -> float:
 ## Which phase the bit is in, so the HUD can colour it differently.
 func drill_state() -> DrillState:
 	return _drill_state
+
+
+func is_steering() -> bool:
+	return _drill_state == DrillState.STEERING
+
+
+func is_recentering() -> bool:
+	return _drill_state == DrillState.RECENTERING
 
 
 func _enter_state(s: DrillState) -> void:

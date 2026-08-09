@@ -3,14 +3,15 @@
 [ext_resource type="PackedScene" uid="uid://bumljw8rc323g" path="res://scenes/drill_ship.tscn" id="2_4wyf3"]
 [ext_resource type="Script" uid="uid://cfpiakxm8m3gy" path="res://scenes/density_terrain.gd" id="2_k0juu"]
 [ext_resource type="TileSet" uid="uid://ccl5j23qx2fav" path="res://assets/terrain_tileset.tres" id="3_71j4m"]
+[ext_resource type="Texture2D" uid="uid://btkc6x0oy3wmh" path="res://assets/drill_icon_dim.png" id="4_qfnet"]
+[ext_resource type="Texture2D" uid="uid://cstdd6siouu3d" path="res://assets/drill_icon_lit.png" id="5_i7141"]
+[ext_resource type="Script" uid="uid://1relnso3435i" path="res://scenes/steer_indicator.gd" id="6_4mrxx"]
 
 [node name="World" type="Node2D" unique_id=872900095]
 
 [node name="DrillShip" parent="." unique_id=1316463290 instance=ExtResource("2_4wyf3")]
 position = Vector2(0, 122)
 max_tilt_deg = 15.0
-steer_hold = 1.5
-forward_lock = 4.0
 hull_follow_speed = 4.0
 hull_level_speed = 3.0
 bore_radius = 16.0
@@ -22,7 +23,21 @@ zoom = Vector2(2, 2)
 [node name="DensityTerrain" type="StaticBody2D" parent="." unique_id=1123881021]
 script = ExtResource("2_k0juu")
 depth = 600
+regrow_enabled = true
 ship_path = NodePath("../DrillShip")
+tile_view_path = NodePath("")
 
 [node name="TileView" type="TileMapLayer" parent="DensityTerrain" unique_id=1418573562]
 tile_set = ExtResource("3_71j4m")
+
+[node name="HUD" type="CanvasLayer" parent="." unique_id=2017410624]
+
+[node name="SteerReady" type="TextureProgressBar" parent="HUD" unique_id=1903111939]
+offset_left = 24.0
+offset_top = 24.0
+offset_right = 64.0
+offset_bottom = 64.0
+scale = Vector2(3, 3)
+texture_under = ExtResource("4_qfnet")
+texture_progress = ExtResource("5_i7141")
+script = ExtResource("6_4mrxx")

@@ -50,7 +50,11 @@ const MAT_TIER     := [0,   0,   1,   1,   2,   2,   3,   4,   9,    1,   2,   2
 @export var depth: int = 400            # cells
 @export var sky_cells: int = 8
 @export var world_seed: int = 20260807
-@export var chunk_cells: int = 32       # collision rebuild granularity
+## Collision rebuild granularity. A carve dirties every chunk it touches and
+## each dirty chunk is rebuilt WHOLE, so this is the dominant cost while
+## drilling: 32 means 1024 cells reprocessed to update an 8-cell area.
+## 8 makes a rebuild 64 cells — 16x cheaper — at the cost of more chunk nodes.
+@export var chunk_cells: int = 8
 
 # --- generation feel ---
 ## Off while tuning drill physics. Cave mouths produce concave corners and
@@ -87,11 +91,13 @@ const MAT_TIER     := [0,   0,   1,   1,   2,   2,   3,   4,   9,    1,   2,   2
 var _density: PackedFloat32Array        # (width+1) * (depth+1) samples
 var _target: PackedFloat32Array         # pristine density, for regrowth
 var _material: PackedByteArray          # width * depth, one per CELL
+var _tile_state: PackedByteArray        # width * depth, 1 = a tile is placed
 
 var _chunks: Dictionary = {}            # Vector2i -> CollisionShape2D
 var _dirty: Dictionary = {}             # Vector2i -> true
 var _dirty_tiles: Dictionary = {}       # Vector2i -> true
-var _edge_polys: Dictionary = {}        # Vector2i chunk -> Array of [poly, color]
+const ChunkView := preload("res://scenes/chunk_view.gd")
+var _chunk_views: Dictionary = {}       # Vector2i chunk -> Node2D fringe renderer
 var _damaged: Dictionary = {}           # sample index -> time last carved
 var _now: float = 0.0
 
@@ -173,6 +179,8 @@ func generate() -> void:
 	_density.resize((width + 1) * (depth + 1))
 	_target.resize((width + 1) * (depth + 1))
 	_material.resize(width * depth)
+	_tile_state.resize(width * depth)
+	_tile_state.fill(0)
 
 	# --- density, per sample point -----------------------------------
 	for y in range(depth + 1):
@@ -338,7 +346,14 @@ func _cross(a: Vector2, b: Vector2, da: float, db: float) -> Vector2:
 	return a.lerp(b, clampf((ISO - da) / denom, 0.0, 1.0))
 
 
-func _emit_square(x: int, y: int, segs: PackedVector2Array) -> void:
+## Emits BOTH collision segments and the visual fill polygon for one cell.
+## These were two separate functions, each reading the same four densities,
+## classifying the same case, and interpolating the same four edge crossings —
+## identical work done twice for every cell of every rebuild. Merged, the
+## rebuild loop halves, and the two tables can no longer drift apart.
+## Returns the marching-squares case index so the caller can spot fully-solid
+## cells (15) and batch them into fill runs without re-reading the densities.
+func _cell_geometry(x: int, y: int, segs: PackedVector2Array, polys: Array) -> int:
 	var tl := _density[_sidx(x,     y)]
 	@warning_ignore("shadowed_variable_base_class")
 	var tr := _density[_sidx(x + 1, y)]
@@ -352,9 +367,10 @@ func _emit_square(x: int, y: int, segs: PackedVector2Array) -> void:
 	if br >= ISO: ci |= 4
 	if bl >= ISO: ci |= 8
 
-	# 0 = fully open, 15 = fully solid. Neither contains a surface.
+	# 0 = fully open, 15 = fully solid. Neither has a surface; 15 gets drawn as
+	# a filled rect by the caller. This early-out skips the vast majority.
 	if ci == 0 or ci == 15:
-		return
+		return ci
 
 	var p_tl := _sample_pos(x,     y)
 	var p_tr := _sample_pos(x + 1, y)
@@ -366,45 +382,64 @@ func _emit_square(x: int, y: int, segs: PackedVector2Array) -> void:
 	var e_bottom := _cross(p_bl, p_br, bl, br)
 	var e_left   := _cross(p_tl, p_bl, tl, bl)
 
-	# ORDER MATTERS. ConcavePolygonShape2D derives surface normals from the
-	# direction of each segment, so every segment is emitted such that solid
-	# rock is consistently on the same side. Cases that mirror each other
-	# (1/14, 2/13, ...) put the wall in the same place but with rock on
-	# OPPOSITE sides, so they must be emitted in opposite order.
+	var col: Color = MAT_COLOR[_material[_cidx(x, y)]]
+
+	# SEGMENT ORDER MATTERS. ConcavePolygonShape2D derives surface normals from
+	# the direction of each segment, so rock is always kept on the same side.
+	# Mirrored cases (1/14, 2/13, ...) put the wall in the same place with rock
+	# on OPPOSITE sides, so they must be emitted in opposite order.
 	match ci:
 		1:
 			segs.append(e_top);    segs.append(e_left)
+			_push_poly(polys, [p_tl, e_top, e_left], col)
 		14:
 			segs.append(e_left);   segs.append(e_top)
+			_push_poly(polys, [e_top, p_tr, p_br, p_bl, e_left], col)
 		2:
 			segs.append(e_right);  segs.append(e_top)
+			_push_poly(polys, [p_tr, e_right, e_top], col)
 		13:
 			segs.append(e_top);    segs.append(e_right)
+			_push_poly(polys, [p_tl, e_top, e_right, p_br, p_bl], col)
 		3:
 			segs.append(e_right);  segs.append(e_left)
+			_push_poly(polys, [p_tl, p_tr, e_right, e_left], col)
 		12:
 			segs.append(e_left);   segs.append(e_right)
+			_push_poly(polys, [p_br, p_bl, e_left, e_right], col)
 		4:
 			segs.append(e_bottom); segs.append(e_right)
+			_push_poly(polys, [p_br, e_bottom, e_right], col)
 		11:
 			segs.append(e_right);  segs.append(e_bottom)
+			_push_poly(polys, [p_tl, p_tr, e_right, e_bottom, p_bl], col)
 		6:
 			segs.append(e_bottom); segs.append(e_top)
+			_push_poly(polys, [p_tr, p_br, e_bottom, e_top], col)
 		9:
 			segs.append(e_top);    segs.append(e_bottom)
+			_push_poly(polys, [p_tl, e_top, e_bottom, p_bl], col)
 		7:
 			segs.append(e_bottom); segs.append(e_left)
+			_push_poly(polys, [p_tl, p_tr, p_br, e_bottom, e_left], col)
 		8:
 			segs.append(e_left);   segs.append(e_bottom)
+			_push_poly(polys, [p_bl, e_left, e_bottom], col)
 		5:
 			# Saddle: TL and BR solid. Ambiguous — separate each solid corner
 			# on its own, using the same winding as the single-corner cases.
 			segs.append(e_top);    segs.append(e_left)
 			segs.append(e_bottom); segs.append(e_right)
+			_push_poly(polys, [p_tl, e_top, e_left], col)
+			_push_poly(polys, [p_br, e_bottom, e_right], col)
 		10:
 			# Saddle: TR and BL solid.
 			segs.append(e_right);  segs.append(e_top)
 			segs.append(e_left);   segs.append(e_bottom)
+			_push_poly(polys, [p_tr, e_right, e_top], col)
+			_push_poly(polys, [p_bl, e_left, e_bottom], col)
+
+	return ci
 
 
 # =====================================================================
@@ -442,15 +477,42 @@ func _rebuild_chunk(chunk: Vector2i) -> void:
 
 	var segs := PackedVector2Array()
 	var polys: Array = []
-	for y in range(y0, y1):
-		for x in range(x0, x1):
-			_emit_square(x, y, segs)
-			_append_solid_poly(x, y, polys)
+	var fills: Array = []
 
-	if polys.is_empty():
-		_edge_polys.erase(chunk)
-	else:
-		_edge_polys[chunk] = polys
+	var cs := float(cell_size)
+	for y in range(y0, y1):
+		# Merge consecutive fully-solid cells of the same material into one
+		# rect. A uniform 8x8 chunk becomes 8 draw commands instead of 64.
+		var run_x := -1
+		var run_mat := -1
+		for x in range(x0, x1):
+			var ci := _cell_geometry(x, y, segs, polys)
+			var mat := int(_material[_cidx(x, y)]) if ci == 15 else -1
+
+			if mat == run_mat:
+				continue                                  # run continues
+			if run_x >= 0:                                # flush the old run
+				fills.append([Rect2(run_x * cs, y * cs, (x - run_x) * cs, cs),
+						MAT_COLOR[run_mat]])
+			run_x = x if mat >= 0 else -1
+			run_mat = mat
+
+		if run_x >= 0:                                    # flush trailing run
+			fills.append([Rect2(run_x * cs, y * cs, (x1 - run_x) * cs, cs),
+					MAT_COLOR[run_mat]])
+
+	# Hand the fringe to this chunk's own canvas item, so only chunks that
+	# actually changed get their draw commands re-recorded.
+	var view: Node2D = _chunk_views.get(chunk)
+	if view == null and not (polys.is_empty() and fills.is_empty()):
+		view = ChunkView.new()
+		view.name = "View_%d_%d" % [chunk.x, chunk.y]
+		add_child(view)
+		_chunk_views[chunk] = view
+	if view != null:
+		view.fills = fills
+		view.polys = polys
+		view.queue_redraw()
 
 	var node: CollisionShape2D = _chunks.get(chunk)
 	if node == null:
@@ -467,9 +529,16 @@ func _rebuild_chunk(chunk: Vector2i) -> void:
 
 	# ConcavePolygonShape2D takes a raw soup of segment endpoints — exactly
 	# what marching squares produces. No loop-chaining or winding needed.
-	var shape := ConcavePolygonShape2D.new()
+	#
+	# Reuse the existing shape and mutate it in place. Assigning a NEW shape
+	# resource makes the physics server remove the old one and add the new one,
+	# and for that instant the chunk has no collision — a raycast crossing it
+	# on that exact frame reports nothing at all.
+	var shape := node.shape as ConcavePolygonShape2D
+	if shape == null:
+		shape = ConcavePolygonShape2D.new()
+		node.shape = shape
 	shape.segments = segs
-	node.shape = shape
 	node.disabled = false
 
 
@@ -479,59 +548,10 @@ func _flush_dirty() -> void:
 	for chunk in _dirty.keys():
 		_rebuild_chunk(chunk)
 	_dirty.clear()
-	queue_redraw()
-
-
-## For a partially-filled cell, returns the polygon covering the SOLID part —
-## the same corners and edge crossings marching squares uses for collision, so
-## the drawn rock and the wall you hit are the same shape by construction.
-## Fully solid cells (case 15) are left to the TileMapLayer, which is far
-## faster and carries the material texture. Only the fringe needs polygons.
-func _append_solid_poly(x: int, y: int, out: Array) -> void:
-	var tl := _density[_sidx(x,     y)]
-	var tr := _density[_sidx(x + 1, y)]
-	var br := _density[_sidx(x + 1, y + 1)]
-	var bl := _density[_sidx(x,     y + 1)]
-
-	var ci := 0
-	if tl >= ISO: ci |= 1
-	if tr >= ISO: ci |= 2
-	if br >= ISO: ci |= 4
-	if bl >= ISO: ci |= 8
-	if ci == 0 or ci == 15:
-		return
-
-	var p_tl := _sample_pos(x,     y)
-	var p_tr := _sample_pos(x + 1, y)
-	var p_br := _sample_pos(x + 1, y + 1)
-	var p_bl := _sample_pos(x,     y + 1)
-
-	var e_top    := _cross(p_tl, p_tr, tl, tr)
-	var e_right  := _cross(p_tr, p_br, tr, br)
-	var e_bottom := _cross(p_bl, p_br, bl, br)
-	var e_left   := _cross(p_tl, p_bl, tl, bl)
-
-	var col: Color = MAT_COLOR[_material[_cidx(x, y)]]
-
-	match ci:
-		1:  _push_poly(out, [p_tl, e_top, e_left], col)
-		2:  _push_poly(out, [p_tr, e_right, e_top], col)
-		4:  _push_poly(out, [p_br, e_bottom, e_right], col)
-		8:  _push_poly(out, [p_bl, e_left, e_bottom], col)
-		3:  _push_poly(out, [p_tl, p_tr, e_right, e_left], col)
-		6:  _push_poly(out, [p_tr, p_br, e_bottom, e_top], col)
-		12: _push_poly(out, [p_br, p_bl, e_left, e_right], col)
-		9:  _push_poly(out, [p_tl, e_top, e_bottom, p_bl], col)
-		7:  _push_poly(out, [p_tl, p_tr, p_br, e_bottom, e_left], col)
-		11: _push_poly(out, [p_tl, p_tr, e_right, e_bottom, p_bl], col)
-		13: _push_poly(out, [p_tl, e_top, e_right, p_br, p_bl], col)
-		14: _push_poly(out, [e_top, p_tr, p_br, p_bl, e_left], col)
-		5:
-			_push_poly(out, [p_tl, e_top, e_left], col)
-			_push_poly(out, [p_br, e_bottom, e_right], col)
-		10:
-			_push_poly(out, [p_tr, e_right, e_top], col)
-			_push_poly(out, [p_bl, e_left, e_bottom], col)
+	# Only the debug contour is drawn on THIS node now, so there's no reason to
+	# invalidate its canvas item every frame unless the contour is actually on.
+	if debug_draw_contour:
+		queue_redraw()
 
 
 ## Godot cannot triangulate zero-area polygons. When a corner sits almost
@@ -554,20 +574,18 @@ func _push_poly(out: Array, pts: Array, col: Color) -> void:
 		var a := clean[i]
 		var b := clean[(i + 1) % clean.size()]
 		area2 += a.x * b.y - b.x * a.y
-	if absf(area2) < 0.02:
+	# A full 4px cell has area2 = 32, so this rejects anything under ~1.5% of a
+	# cell. Godot's triangulator gives up well before mathematical zero area,
+	# so the cutoff has to be generous rather than merely non-zero.
+	if not is_finite(area2) or absf(area2) < 0.5:
 		return
 
 	out.append([clean, col])
 
 
 func _draw() -> void:
-	# Smoothed rock fringe. Interior rock is tiles; only the cut face is drawn
-	# as geometry, so this scales with tunnel perimeter rather than world area.
-	for chunk in _edge_polys:
-		for entry in _edge_polys[chunk]:
-			draw_colored_polygon(entry[0], entry[1])
-
-	# Draw the real collision contour, so what you see IS what you hit.
+	# The rock fringe lives in per-chunk ChunkView nodes now — see chunk_view.gd.
+	# Only the debug contour is drawn here, and only when asked for.
 	if not debug_draw_contour:
 		return
 	for chunk in _chunks:
@@ -585,11 +603,19 @@ func _draw() -> void:
 #  Regrowth — the field relaxes back toward its generated state
 # =====================================================================
 
-func _process(delta: float) -> void:
+## Anything that changes DENSITY runs on the physics clock, so collision is
+## always consistent with what the ship's raycast will see next tick. The ship
+## sits above this node in world.tscn, so its carve happens first and the
+## rebuild below lands in the same physics frame.
+func _physics_process(delta: float) -> void:
 	_now += delta
 	if regrow_enabled:
 		_heal(delta)
-	_flush_dirty()          # one collision rebuild pass per frame, after all edits
+	_flush_dirty()          # collision — must be on the physics clock
+
+
+## Visuals only. Safe to run at render rate; being a frame stale is invisible.
+func _process(_delta: float) -> void:
 	_flush_dirty_tiles()
 
 
@@ -648,6 +674,8 @@ func _redraw_all_tiles() -> void:
 
 
 func _dirty_tile_at_sample(sx: int, sy: int) -> void:
+	if _tiles == null:
+		return          # no tile view — don't build a queue nothing will read
 	# Queue rather than redraw immediately. With continuous carving this is hit
 	# hundreds of times a frame, and the Dictionary dedupes the overlap.
 	for dy in [-1, 0]:
@@ -673,6 +701,16 @@ func _refresh_tile(cx: int, cy: int) -> void:
 			and _density[_sidx(cx + 1, cy)] >= ISO \
 			and _density[_sidx(cx, cy + 1)] >= ISO \
 			and _density[_sidx(cx + 1, cy + 1)] >= ISO
+
+	# Skip cells whose state hasn't actually flipped. While carving, most
+	# refreshed cells are still solid or still empty, and set_cell/erase_cell
+	# are not free — they poke the TileMapLayer's internal update path.
+	var ci := _cidx(cx, cy)
+	var want: int = 1 if full else 0
+	if _tile_state[ci] == want:
+		return
+	_tile_state[ci] = want
+
 	var coords := Vector2i(cx, cy)
 	if full:
 		_tiles.set_cell(coords, _tile_source, MAT_ATLAS[_material[_cidx(cx, cy)]])
