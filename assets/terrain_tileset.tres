@@ -1,0 +1,62 @@
+[gd_resource type="TileSet" format=3 uid="uid://ccl5j23qx2fav"]
+
+[ext_resource type="Texture2D" uid="uid://7xvmcdlcsru5" path="res://assets/terrain_tiles_4.png" id="1_2hqfw"]
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_oqplg"]
+texture = ExtResource("1_2hqfw")
+texture_region_size = Vector2i(4, 4)
+0:0/0 = 0
+0:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+0:0/0/custom_data_0 = 0.1
+1:0/0 = 0
+1:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+1:0/0/custom_data_0 = 0.2
+2:0/0 = 0
+2:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+2:0/0/custom_data_0 = 0.4
+2:0/0/custom_data_1 = 1
+3:0/0 = 0
+3:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+3:0/0/custom_data_0 = 0.6
+3:0/0/custom_data_1 = 1
+4:0/0 = 0
+4:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+4:0/0/custom_data_0 = 1.0
+4:0/0/custom_data_1 = 2
+5:0/0 = 0
+5:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+5:0/0/custom_data_0 = 1.5
+5:0/0/custom_data_1 = 2
+0:1/0 = 0
+0:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+0:1/0/custom_data_0 = 1.8
+0:1/0/custom_data_1 = 3
+1:1/0 = 0
+1:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+1:1/0/custom_data_0 = 2.3
+1:1/0/custom_data_1 = 4
+2:1/0 = 0
+2:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+2:1/0/custom_data_0 = -1.0
+2:1/0/custom_data_1 = 9
+3:1/0 = 0
+3:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+3:1/0/custom_data_0 = 0.3
+3:1/0/custom_data_1 = 1
+4:1/0 = 0
+4:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+4:1/0/custom_data_0 = 0.6
+4:1/0/custom_data_1 = 2
+5:1/0 = 0
+5:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-2, -2, 2, -2, 2, 2, -2, 2)
+5:1/0/custom_data_0 = 0.8
+5:1/0/custom_data_1 = 2
+
+[resource]
+tile_size = Vector2i(4, 4)
+physics_layer_0/collision_layer = 1
+custom_data_layer_0/name = "hardness"
+custom_data_layer_0/type = 3
+custom_data_layer_1/name = "tier"
+custom_data_layer_1/type = 2
+sources/1 = SubResource("TileSetAtlasSource_oqplg")

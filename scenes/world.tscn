@@ -1,15 +1,28 @@
 [gd_scene format=3 uid="uid://ciif7jwa57h3i"]
 
-[ext_resource type="PackedScene" uid="uid://755y4youahtb" path="res://scenes/terrain.tscn" id="1_rwgxs"]
 [ext_resource type="PackedScene" uid="uid://bumljw8rc323g" path="res://scenes/drill_ship.tscn" id="2_4wyf3"]
+[ext_resource type="Script" uid="uid://cfpiakxm8m3gy" path="res://scenes/density_terrain.gd" id="2_k0juu"]
+[ext_resource type="TileSet" uid="uid://ccl5j23qx2fav" path="res://assets/terrain_tileset.tres" id="3_71j4m"]
 
 [node name="World" type="Node2D" unique_id=872900095]
 
-[node name="TileMapLayer" parent="." unique_id=214181872 instance=ExtResource("1_rwgxs")]
-ship_path = NodePath("../DrillShip")
-
 [node name="DrillShip" parent="." unique_id=1316463290 instance=ExtResource("2_4wyf3")]
-position = Vector2(64, -80)
+position = Vector2(0, 122)
+max_tilt_deg = 15.0
+steer_hold = 1.5
+forward_lock = 4.0
+hull_follow_speed = 4.0
+hull_level_speed = 3.0
+bore_radius = 16.0
+debug_drill = true
 
 [node name="Camera2D" type="Camera2D" parent="DrillShip" unique_id=1253820513]
 zoom = Vector2(2, 2)
+
+[node name="DensityTerrain" type="StaticBody2D" parent="." unique_id=1123881021]
+script = ExtResource("2_k0juu")
+depth = 600
+ship_path = NodePath("../DrillShip")
+
+[node name="TileView" type="TileMapLayer" parent="DensityTerrain" unique_id=1418573562]
+tile_set = ExtResource("3_71j4m")

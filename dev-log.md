@@ -2,11 +2,45 @@
 
 ---
 
-## Current state (end of 2026-08-07)
+## Current state (2026-08-08)
 
-Ship bores tunnels through procedurally generated layered terrain that heals
-behind it. Depth tiers, hard gates, and equipment/heat-based dig rates are all
-in. Two known rotation bugs, and one open architecture decision.
+**Branch: `density-terrain`.** Terrain has been rebuilt as a density field with
+marching-squares collision. Drilling is continuous, tunnels are smooth curves
+rather than stair-steps, and steering is a committed action with a lock cycle.
+Caves are disabled while drill physics gets tuned.
+
+`main` still holds the working TileMap prototype. `git checkout main` reverts
+everything below.
+
+---
+
+## Architecture
+
+Rock is a **float per sample point** (0 = open, 1 = solid), not a boolean per
+cell. The wall is the contour where density crosses **ISO = 0.5**, found by
+interpolating *between* samples — which is why wall angles are continuous at a
+4px cell size.
+
+Everything the ship needs from terrain goes through two methods. Any future
+backend only has to provide these:
+
+```gdscript
+sample(global_pos) -> Dictionary     # {hardness, tier, material}, {} if open
+carve(center_global, radius, strength = 1.0)
+```
+
+The ship contains no reference to TileMapLayer, cells, or atlas coordinates.
+
+### Rendering is split three ways
+
+| Cell state | Drawn by |
+|---|---|
+| Fully solid (all 4 corners ≥ ISO) | TileMapLayer — fast, batched, textured |
+| Partial | `_draw()` polygon cut to the contour, flat material colour |
+| Fully open | nothing |
+
+Square tiles in partially-filled cells *are* the jagged edge. Only the fringe
+needs geometry, so cost scales with tunnel perimeter, not world area.
 
 ---
 
@@ -15,16 +49,15 @@ in. Two known rotation bugs, and one open architecture decision.
 ```
 res://
 ├── assets/
-│   ├── terrain_tiles_4.png    24×8  — 12 materials @ 4px   ← IN USE
-│   ├── terrain_tiles_8.png    48×16 — same, @ 8px          (spare)
-│   ├── terrain_tiles.png      96×32 — original @ 16px      (obsolete)
-│   └── drillship_hull.png     32×18, nose points +X
+│   ├── terrain_tiles_4.png     24×8, 12 materials @ 4px
+│   ├── terrain_tileset.tres    shared TileSet resource
+│   └── drillship_hull.png      16×10, wheels top and bottom
 ├── scenes/
-│   ├── world.tscn             MAIN SCENE
-│   ├── terrain.tscn           TileMapLayer + TileSet + terrain_generate.gd
-│   ├── terrain_generate.gd    proc-gen + carve() + regrowth
-│   ├── drill_ship.tscn
-│   └── drill_ship.gd
+│   ├── world.tscn              MAIN SCENE
+│   ├── density_terrain.gd      density field, marching squares, generation
+│   ├── drill_ship.tscn / .gd
+│   ├── terrain.tscn            OLD TileMap terrain — unused on this branch
+│   └── terrain_generate.gd     OLD backend, kept for reference
 ├── drill-ship-game-design-doc.md
 └── dev-log.md
 ```
@@ -33,185 +66,236 @@ res://
 
 ```
 World                Node2D
-├── TileMapLayer     instance of terrain.tscn
-│                    ship_path → ../DrillShip   (MUST be set here, not in terrain.tscn)
-└── DrillShip        instance of drill_ship.tscn, position (64, -80)
-    └── Camera2D     zoom (2, 2)
+├── DrillShip        z_index 10, position (0, 120)
+│   ├── Sprite2D     drillship_hull.png
+│   ├── CollisionShape2D  CapsuleShape2D radius 5, height 16, rotation 90°
+│   ├── DrillPivot   Node2D — the steerable bit mount
+│   │   ├── DrillHead    Polygon2D, (7,-4)(11,-3)(20,0)(11,3)(7,4)
+│   │   └── RayCast2D    target_position (30, 0)
+│   └── Camera2D     zoom (2, 2)
+└── DensityTerrain   StaticBody2D — density_terrain.gd
+    ├── TileView     TileMapLayer, collision_enabled OFF, visuals only
+    └── Chunk_x_y    CollisionShape2D nodes, created at runtime
 ```
 
-### DrillShip node tree
-
-```
-DrillShip            CharacterBody2D — drill_ship.gd
-├── Sprite2D         drillship_hull.png, scale (0.969, 0.889) → renders ~31×16
-├── CollisionShape2D CapsuleShape2D radius 5, height 24, rotation 90° → 24×10
-└── DrillPivot       Node2D — rotates to drill heading (±60°, 15° steps)
-    ├── DrillHead    ColorRect, visual only
-    └── RayCast2D    position (7,0), target_position (28,0)
-```
-
-Capsule needs `rotation = 90°` — Godot's CapsuleShape2D runs along Y by default,
-and the drill heading is local +X.
+`DensityTerrain._ready()` re-centres itself horizontally, so the ship spawn
+stays mid-world at any `width`.
 
 ---
 
-## Tile data
+## Material table
 
-**Three numbers must always agree: art resolution per material = `texture_region_size`
-= `tile_size`.** Currently all 4. A mismatch here is what caused tiles to render
-off-grid and overlap their neighbours.
+Now a code table in `density_terrain.gd` — a density field has no tiles to
+hang custom data on.
 
-| Tile | Atlas | hardness | tier |
+| Idx | Material | hardness | tier |
 |---|---|---|---|
-| topsoil | 0:0 | 0.1 | 0 |
-| dirt | 1:0 | 0.2 | 0 |
-| clay | 2:0 | 0.4 | 1 |
-| sandstone | 3:0 | 0.6 | 1 |
-| shale | 4:0 | 1.0 | 2 |
-| granite | 5:0 | 1.5 | 2 |
-| basalt | 0:1 | 1.8 | 3 |
-| deep rock | 1:1 | 2.3 | 4 |
-| **gate rock** | 2:1 | **-1.0** | 9 |
-| magma | 3:1 | 0.3 | 1 |
-| ore | 4:1 | 0.6 | 2 |
-| geode | 5:1 | 0.8 | 2 |
+| 0 | topsoil | 0.1 | 0 |
+| 1 | dirt | 0.2 | 0 |
+| 2 | clay | 0.4 | 1 |
+| 3 | sandstone | 0.6 | 1 |
+| 4 | shale | 1.0 | 2 |
+| 5 | granite | 1.5 | 2 |
+| 6 | basalt | 1.8 | 3 |
+| 7 | deep rock | 2.3 | 4 |
+| 8 | **gate rock** | **-1.0** | 9 |
+| 9 | magma | 0.3 | 1 |
+| 10 | ore | 0.6 | 2 |
+| 11 | geode | 0.8 | 2 |
 
-`hardness < 0` = un-boreable (design doc §7 hard gate). It also means *no thrust* —
-you can't hover by grinding on a gate.
-
-Unset values default to 0. Godot doesn't serialize defaults, so tier legitimately
-appears on only 10 of 12 tiles (topsoil and dirt are tier 0). That's not a gap.
-
-**Atlas source ID is 1, not 0** — rebuilding the atlas for 4px removed source 0 and
-IDs aren't reused. Never hardcode it; use `tile_set.get_source_id(0)`.
+`hardness < 0` means un-boreable *and* no thrust — you can't hover by grinding
+on a gate. `MAT_COLOR` holds matching flat colours for the fringe polygons.
 
 ---
 
 ## Systems
 
-**Drill aim.** `pivot` rotates ±`max_tilt_deg` (60) in `tilt_step_deg` (15)
-increments, local to the hull. `heading()` reads `pivot.global_rotation` so the
-world-space bore direction accounts for hull rotation. Both are exports —
-`tilt_step_deg` is the upgrade hook (ship 30°, sell 15°, then finer).
+**Steering is a committed action**, not a held aim — three states in
+`_update_tilt()`:
 
-**Steering.** Because the drill is offset relative to a hull that rotates to follow
-travel, holding a tilt makes the ship *curve* rather than snap to a heading. Like
-directional boring. Any heading is still reachable, it just takes a turn.
+- `CENTERED` — bit aligned with hull, boring straight. Only state accepting input.
+- `STEERING` — one input tilts the bit `tilt_step_deg` and holds it until the
+  **hull has actually turned** `steer_turn_fraction` of that angle. Holding the
+  input through the window takes another step, up to the cap.
+- `RECENTERING` — bit forced forward and locked until `forward_lock_distance`
+  **pixels of bore** have passed, while the hull straightens into its new tunnel.
 
-**Boring.** Thrust only applies when `_is_boring` — the ray must be touching
-breakable rock. No thrust in open air, none against gate rock. Gravity is skipped
-while boring (the bit anchors you).
+Default state is *forward*, so boring straight is what happens unless you spend
+a steering action.
 
-**Dig rate.** `drill_power × _heat_factor() × _gravity_factor() × 0.25^(rock_tier − drill_tier)`.
-Tier deficit gives soft walls; negative hardness gives hard walls; `_gravity_factor()`
-makes climbing ~0.45× and descending ~1.25×, so going up is expensive rather than
-forbidden.
+**Exit conditions are geometric, not temporal.** Earlier versions used fixed
+durations, which produced a wide arc in topsoil and a barely-visible kink in
+granite from the same keystroke — speed varies with hardness, so time doesn't
+control shape. Angle and distance give the same bend and the same straight run
+everywhere; hard rock just takes longer in wall-clock time. `steer_hold` and
+`forward_lock` survive only as **safety caps** for a stalled ship.
 
-**Carving.** `terrain_generate.carve(center, radius)` removes a disc. Gate rock is
-skipped inside the loop — otherwise a wide bore would chew through a hard wall from
-an adjacent soft tile and leak the tier gate.
+Upgrade hooks: `forward_lock_distance` down = deviate more often;
+`steer_turn_fraction` or `max_tilt_deg` up = turn harder.
 
-**Regrowth.** Carved cells are recorded as scars with a timestamp and restored after
-`regrow_delay` (currently **3.0s**). Cells within `ship_clearance` of the ship are
-deferred, not skipped — terrain closes in and waits rather than crushing you.
-Natural caves are never scars, so generated open space stays open permanently.
+`steer_progress()` returns 0→1 readiness for a HUD indicator, tracking whichever
+release condition is nearer. `drill_state()` exposes the phase for colouring.
 
-**Generation.** Depth bands follow the tier progression. Gate seams at y=237/307/377
-span the full width and are written *before* the cave check, so noise can never punch
-a hole through a tier gate. Ore/geode/magma come from a second noise layer.
+**Hull attitude** follows `_travel_dir` — a smoothed record of actual motion —
+never `heading()`. Turn rate is gated by speed: a drillship can't pirouette in
+its own borehole, so stationary means no rotation.
+
+**Boring is a state with hysteresis** (`bore_grace_time`), not a per-frame
+contact test.
+
+**Carving is continuous.** Every frame removes density proportional to dig
+rate, with linear falloff from the carve centre. Integrated over
+`hardness / dig_rate` seconds this removes the same material as one full-strength
+carve — it just arrives smoothly. `bore_speed` is now a *cap*; actual speed
+emerges from how fast rock softens.
+
+**Dig rate** = `drill_power × heat_factor × gravity_factor × 0.25^(rock_tier − drill_tier)`.
+Tier deficit gives soft walls, negative hardness gives hard walls,
+`gravity_factor` makes climbing ~0.45× and descending ~1.25×.
+
+**Regrowth** relaxes density back toward its generated value after
+`regrow_delay`. Currently **disabled** to isolate carve behaviour.
+
+---
+
+## The geometry budget
+
+These relationships caused most of the bugs. Worth keeping in one place.
+
+```
+hull half-length     = capsule height / 2          = 8
+post-carve wall      = half-length + probe_depth + bore_radius
+raycast reach        must exceed post-carve wall, or contact is lost
+                       every time a carve punches through
+tunnel radius        must exceed half-length to rotate freely in place
+```
+
+At `bore_radius` 16 the wall sits ~26px out, so the ray needs ≥ 30. At
+`bore_radius` 7 it sits ~17px out and a 22px ray suffices.
+
+**Long hull, tight tunnel, fast turning — pick two.** A 16px hull turning 15°
+sweeps its ends to ~7px off-axis; a snug 7px-radius tunnel leaves nothing spare.
+Shortening the capsule buys tighter tunnels *and* cleaner turns.
 
 ---
 
 ## Open issues
 
-**1. Hull swings wildly when climbing.** Two separate causes, fixes drafted but not
-yet applied:
-
-- The `velocity.length() > 8.0` guard toggles. Boring head-on, `move_and_slide()`
-  cancels velocity, the guard fails, the hull starts levelling, a cell breaks, the
-  guard passes again. Slow digging → more time blocked → worse. Fix: follow
-  `heading().angle()` instead of `velocity.angle()` while boring; the drill direction
-  is stable even when grinding stationary.
-- `_level_target()` picks 0 or PI from the *current* rotation, so pointing straight up
-  sits exactly on the decision boundary and jitter flips it 180°. Fix: a sticky
-  `_facing` int updated only on clear horizontal intent.
-
-**2. `bore_radius` is very generous.** 14.0 → a 28px tunnel for a 24×10 hull. Part of
-why nothing snags, but it's why tunnels read as oversized. For a near-exact fit it
-wants to be ~6–7. Note the ray reaches 35px ahead of hull centre (position 7 +
-target 28), so the carve disc is centred well forward of the ship.
-
-**3. Sprite is larger than collision.** Sprite renders ~31×16, capsule is 24×10.
-Visual overhangs the hull.
-
-**4. Drive is world-X** while the hull may be rotated. Matters less now that the hull
-levels when idle.
+1. **Cave geometry makes physics feel wrong** — concave corners and thin spurs.
+   Caves are off until drilling is settled. This needs solving before they return.
+2. **Fringe polygons are flat-coloured** against textured interior rock. One cell
+   thick. If it reads badly, `draw_polygon` with UVs would texture them.
+3. **`_draw()` re-issues every edge polygon on each redraw.** Fine now; if the
+   framerate dips after carving a lot of tunnel, batch into per-material triangle
+   arrays.
+4. **Startup cost at 200×600** is dominated by ~120,000 `set_cell` calls building
+   the tile view. That view is scaffolding and will eventually go.
 
 ---
 
-## Decisions made
+## Deliberate choices that look like bugs
 
-- **CharacterBody2D, not RigidBody2D.** Design doc §102 suggested rigid. Rejected
-  twice, for different reasons: direct player control is easier to tune kinematically,
-  and "hull stays horizontal when no forces act" is awkward to get from a body with
-  angular momentum — it'd need torque controllers fighting it back to level.
-- **Terrain regrows (3s).** Reinforces §3's "push down, don't flee up" as a mechanic
-  rather than a hope. Also bounds state: an infinite world with permanent destruction
-  would mean unbounded data to persist.
-- **Act 1 backhaul resolved.** Extraction points sit generally *forward* of the start
-  rather than requiring backtracking; early rock is soft so re-drilling costs seconds.
-  No permanent tunnels needed. → Generator must enforce forward placement as a rule.
-- **Climbing is expensive, not forbidden** — via `_gravity_factor()`, not geometry.
-- **Gravity should apply only in pre-set open space.** Agreed, not yet implemented.
-- **4px tiles.** ~4px is the practical floor for TileMap: below that the grid overhead
-  simulates something that isn't a grid, and a 4×4 material patch is already just a
-  flat colour with one speckle.
+**The sprite is intentionally larger than the collision shape.** Sprite2D scale
+is (1.1875, 1.4), rendering the 16×10 hull art at ~19×14 over a 16×10 capsule.
+This makes the ship read as filling its bore while collision stays forgiving.
+
+→ When diagnosing contact problems, trust the debug contour and the capsule.
+**Never the sprite.** Visual overlap with walls is expected here and means
+nothing.
+
+**Where the live tuning actually lives.** Eight properties are overridden on the
+DrillShip *instance* in `world.tscn`, and instance overrides beat both
+`drill_ship.tscn` and the script defaults:
+
+| Property | Instance value | Script default |
+|---|---|---|
+| `max_tilt_deg` | 15.0 | 60.0 |
+| `steer_hold` | 1.5 ⚠️ | 4.0 (now a cap) |
+| `forward_lock` | 4.0 ⚠️ | 8.0 (now a cap) |
+| `hull_follow_speed` | 4.0 | 6.0 |
+| `hull_level_speed` | 3.0 | 4.0 |
+| `bore_radius` | **16.0** | 14.0 (10.0 in drill_ship.tscn) |
+
+A 1.5s steer plus a 4.0s forward lock means each steering action is a ~5.5s
+commitment — that's where the "bores straight, deviates rarely" feel comes from.
+
+→ Editing `drill_ship.tscn` will NOT change these. The Inspector's revert arrow
+marks an overridden property.
 
 ---
 
-## Open decision: terrain architecture
+## Decisions, and why
 
-Three options on the table, to be settled next session.
+- **Density field over boolean grid.** The lever for smoothness was never
+  resolution, it was interpolation. A float field at 4px beats a boolean field
+  at 1px, and costs far less.
+- **CharacterBody2D, not RigidBody2D.** Rejected twice. Direct control is easier
+  to tune kinematically, and "hull holds its attitude" is awkward to get from a
+  body with angular momentum.
+- **`motion_mode = FLOATING`.** The GROUNDED default applies floor/ceiling
+  semantics and `wall_min_slide_angle`, which *stops* sliding on head-on
+  surfaces. All wrong for a rotating, often weightless ship.
+- **Terrain regrows.** Reinforces §3's "push down, don't flee up" as a mechanic,
+  and bounds state for an infinite world.
+- **Act 1 backhaul resolved.** Extraction points sit forward of the start; early
+  rock is soft so re-drilling costs seconds. → the generator must enforce forward
+  placement.
+- **Steering as committed action.** Makes "boring straight" the default rather
+  than something the player maintains.
 
-1. **Stay on TileMap at 4px.** Keeps everything already built. Ceiling: walls are
-   always somewhat stepped, carve shapes are always grid-quantized.
-2. **Hybrid** — TileMapLayer for material data and rendering, physics disabled, custom
-   marching-squares collision generated from the cell grid. Smooth walls and exact hull
-   fit while keeping the TileSet editor and custom-data UI. Roughly a fifth of the work
-   of a rewrite.
-3. **Full pixel terrain** — `Image` + marching squares + chunk streaming. The only
-   option that gives genuinely smooth walls and arbitrary carve shapes. Costs: the
-   TileSet editor entirely, self-implemented collision generation and rendering,
-   mandatory day-one chunking, slow per-pixel GDScript access, and much harder
-   debugging.
+---
 
-**Suggested order:** fix the two rotation bugs and make gravity open-space-only first,
-since those are what the "swinging / doesn't fit" complaint actually is. Re-evaluate
-after. Go to (3) only when a carve shape is wanted that the grid can't express — that's
-the one problem with no cheaper answer.
+## Debugging lessons worth not relearning
+
+- **One definition of solid.** Collision used the interpolated contour while
+  `sample()` used a per-cell average — so the drill and the wall disagreed about
+  where rock was. Everything now goes through `density_at()`.
+- **Segment winding matters.** `ConcavePolygonShape2D` infers surface normals
+  from segment *direction*. Mirrored marching-squares cases (1/14, 2/13, …) put
+  the wall in the same place with rock on opposite sides and must be emitted in
+  opposite order. Bad winding = probes stepping into air and depenetration
+  pushing the ship *into* rock.
+- **Probe along the ray, not the normal.** The ray always travels hull→rock, so
+  stepping along it is deeper-into-material by construction.
+- **Godot can't triangulate zero-area polygons.** When a corner sits almost
+  exactly on ISO the edge crossings collapse onto it. `_push_poly()` now drops
+  duplicates and rejects slivers before they reach `_draw()`.
+- **Don't gate a diagnostic behind a checkbox** whose saved state you're unsure
+  of. The unconditional throttled `_dbg` print found the real bug in one run
+  after several rounds of guessing.
+- **Atlas source IDs are not reused.** Rebuilding a TileSet atlas gave source 1,
+  not 0. Never hardcode it.
+- **F5 runs the main scene, F6 runs the open scene.** Running the wrong one
+  silently explains a lot.
 
 ---
 
 ## Next up
 
-1. Apply the two hull-rotation fixes.
-2. Gravity only in pre-set open space.
-3. Settle the terrain architecture question.
-4. Tune `bore_radius` toward exact hull fit; reconcile sprite scale with collision.
-5. Hardness-scaled collapse delay — loose topsoil caves in fast, granite holds a shaft
-   open. `regrow_delay × (1.0 + hardness)`, no new data layer needed. **Caveat:** breaks
-   the regrowth queue's time-ordering assumption, since `_process` stops at the first
-   cell that isn't ready. One slow granite cell at the front would hold back all the
-   topsoil behind it. Needs the loop restructured to scan a window instead of breaking.
-6. Fuel, via the existing `tile_drilled` signal.
-7. Heat, wiring up the `_heat_factor()` stub.
-8. Autotiling / Terrain Sets, if staying on TileMap.
-9. Chunk streaming, whenever generation startup cost becomes noticeable.
+**Start here:** clear the ⚠️ `steer_hold` / `forward_lock` overrides in
+`world.tscn` (revert arrow) so they fall back to the new cap values — 1.5s would
+cut a turn short in hard rock before the hull came round. Then tune
+`forward_lock_distance`. The old 4.0s lock at ~120px/s was roughly **480px**;
+the new default is 240, so push it up if that spacing felt right.
+
+1. **Steering-ready HUD.** `TextureProgressBar` in a `CanvasLayer`, dimmed drill
+   icon as `texture_under`, bright as `texture_progress`, driven by
+   `ship.steer_progress() * 100`. A distance-based bar stalls when the ship
+   stops, which teaches the actual rule — bore forward to earn the next turn.
+   Open question: show it only during RECENTERING (cleaner, and the tilted bit
+   already communicates STEERING visually) or during both.
+2. Bring caves back and fix the contact behaviour at concave corners and spurs.
+4. Re-enable regrowth and retune now that carving is continuous.
+5. Fuel, via the `drilled(global_pos, hardness, tier)` signal.
+6. Heat, wiring up the `_heat_factor()` stub.
+7. Chunk streaming, when world size starts to hurt.
+8. Delete the tile view once fringe rendering is trusted; texture the polygons
+   or move to a density shader.
 
 ---
 
 ## Standing checkpoint question
 
-Does grinding through granite read as satisfying weight, or as waiting? Design doc §102
-says validate that the core drilling feel is fun before building anything else. Still
-worth answering honestly before fuel and heat go on top.
+Does grinding through granite read as satisfying weight, or as waiting? Design
+doc §102 says validate that the core drilling feel is fun before building
+anything else — still unanswered, and now much closer to being answerable.
