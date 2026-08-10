@@ -50,6 +50,21 @@ signal drilled(global_pos: Vector2, hardness: float, tier: int)
 @export var carve_gain: float = 1.0       # multiplier on continuous rock removal
 @export var debug_drill: bool = false
 
+# --- fuel ---
+## Fuel is spent per UNIT OF MATERIAL REMOVED, not per second. One `drilled`
+## emission equals one full-strength carve's worth of rock regardless of how
+## long it took, so cost tracks volume — and scaling by hardness means the
+## same tunnel costs more through granite than through dirt. That's what makes
+## route choice a decision rather than a formality.
+@export var max_fuel: float = 1000.0
+@export var fuel_per_unit: float = 4.0
+@export var fuel_hardness_scale: float = 1.5
+
+var fuel: float = 0.0
+
+signal fuel_changed(current: float, maximum: float)
+signal fuel_empty()
+
 # --- heat (stub) ---
 @export var heat: float = 0.0
 @export var heat_soft_cap: float = 100.0
@@ -78,6 +93,8 @@ var _dbg_t: float = 0.0
 
 
 func _ready() -> void:
+	fuel = max_fuel
+	fuel_changed.emit(fuel, max_fuel)
 	ray.add_exception(self)
 	# GROUNDED (the default) applies floor/wall/ceiling semantics relative to
 	# up_direction: floor snapping, ceiling stops, and wall_min_slide_angle,
@@ -236,6 +253,22 @@ func _update_tilt(delta: float) -> void:
 	pivot.rotation = lerp_angle(pivot.rotation, tilt_index * deg_to_rad(tilt_step_deg), pivot_turn_speed * delta)
 
 
+func _spend_fuel(amount: float) -> void:
+	if amount <= 0.0 or fuel <= 0.0:
+		return
+	var before := fuel
+	fuel = maxf(0.0, fuel - amount)
+	fuel_changed.emit(fuel, max_fuel)
+	if fuel <= 0.0 and before > 0.0:
+		fuel_empty.emit()
+
+
+## Top up the tank. The hook settlements and resource elevators will call.
+func refuel(amount: float) -> void:
+	fuel = clampf(fuel + amount, 0.0, max_fuel)
+	fuel_changed.emit(fuel, max_fuel)
+
+
 func _heat_factor() -> float:
 	return clampf(1.0 - heat / heat_soft_cap, 0.15, 1.0)
 
@@ -261,6 +294,15 @@ func _drill(delta: float) -> void:
 
 	if not Input.is_action_pressed("drill"):
 		_dbg = "idle — drill not held"
+		_dig_progress = 0.0
+		_bore_grace = 0.0
+		_is_boring = false
+		return
+
+	# Dry tank: the bit won't turn, so there's no bite and no thrust. The ship
+	# falls and drives but cannot cut, which is the whole point of the resource.
+	if fuel <= 0.0:
+		_dbg = "OUT OF FUEL"
 		_dig_progress = 0.0
 		_bore_grace = 0.0
 		_is_boring = false
@@ -300,10 +342,9 @@ func _drill(delta: float) -> void:
 	_bore_grace = bore_grace_time     # confirmed contact — refresh the state
 	_is_boring = true
 
-	_dbg = "BORING  hard=%.2f tier=%d rate=%.2f strength=%.4f speed=%.0f" % [
+	_dbg = "BORING  hard=%.2f tier=%d rate=%.2f speed=%.0f fuel=%.0f/%.0f" % [
 		hardness, rock_tier, _dig_rate(rock_tier),
-		(_dig_rate(rock_tier) / maxf(hardness, 0.01)) * delta * carve_gain,
-		velocity.length()]
+		velocity.length(), fuel, max_fuel]
 
 	# Continuous wear. Remove a slice of density every frame in proportion to
 	# dig rate instead of nothing-then-a-whole-disc. Integrated over
@@ -317,5 +358,6 @@ func _drill(delta: float) -> void:
 	# worth of material, for fuel burn and ore collection later.
 	_dig_progress += rate * delta
 	if _dig_progress >= hardness:
+		_spend_fuel(fuel_per_unit * (1.0 + hardness * fuel_hardness_scale))
 		drilled.emit(probe, hardness, rock_tier)
 		_dig_progress = 0.0

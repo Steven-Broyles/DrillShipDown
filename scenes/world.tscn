@@ -6,6 +6,9 @@
 [ext_resource type="Texture2D" uid="uid://btkc6x0oy3wmh" path="res://assets/drill_icon_dim.png" id="4_qfnet"]
 [ext_resource type="Texture2D" uid="uid://cstdd6siouu3d" path="res://assets/drill_icon_lit.png" id="5_i7141"]
 [ext_resource type="Script" uid="uid://1relnso3435i" path="res://scenes/steer_indicator.gd" id="6_4mrxx"]
+[ext_resource type="Texture2D" uid="uid://dn53nlk3ds7lt" path="res://assets/fuel_gauge_under.png" id="7_4mrxx"]
+[ext_resource type="Texture2D" uid="uid://bkrusi8xfqip" path="res://assets/fuel_gauge_fill.png" id="8_7r4gi"]
+[ext_resource type="Script" uid="uid://5pw0nb82r8bp" path="res://scenes/fuel_gauge.gd" id="9_7r4gi"]
 
 [node name="World" type="Node2D" unique_id=872900095]
 
@@ -41,3 +44,13 @@ scale = Vector2(3, 3)
 texture_under = ExtResource("4_qfnet")
 texture_progress = ExtResource("5_i7141")
 script = ExtResource("6_4mrxx")
+
+[node name="FuelGauge" type="TextureProgressBar" parent="HUD" unique_id=1770188901]
+offset_left = 24.0
+offset_top = 72.0
+offset_right = 88.0
+offset_bottom = 112.0
+scale = Vector2(3, 3)
+texture_under = ExtResource("7_4mrxx")
+texture_progress = ExtResource("8_7r4gi")
+script = ExtResource("9_7r4gi")
