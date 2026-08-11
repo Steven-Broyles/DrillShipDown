@@ -290,13 +290,8 @@ func _spawn_deposits() -> void:
 			var node := deposit_scene.instantiate()
 			node.position = Vector2((best_x + 0.5) * cell_size, (best_y + 0.5) * cell_size)
 			# Geodes deeper down, ore above — matches the material bands.
-			if best_y > 120 and best > geode_threshold:
-				node.material_id = Mat.GEODE
-				node.yield_amount = 3
-				node.max_hp = 7.0
-				node.hardness = 1.2
-			else:
-				node.material_id = Mat.ORE
+			# Only the KIND is set here; the deposit owns its own stats.
+			node.material_id = Mat.GEODE if (best_y > 120 and best > geode_threshold) else Mat.ORE
 			add_child(node)
 
 			# Hollow a small pocket so the deposit sits in rock rather than

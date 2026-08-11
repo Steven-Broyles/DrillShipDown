@@ -20,17 +20,28 @@ signal depleted(global_pos: Vector2, material_id: int, amount: int)
 ## NOT named `material` — CanvasItem already has a `material` property for
 ## shaders, and shadowing it is a parse error.
 @export var material_id: int = 10
+
+# --- ore stats ---
+## Break time in seconds is roughly `max_hp * hardness / dig_rate`, and dig_rate
+## sits near 1.0 with a stock drill. So hp 2.0 at hardness 0.7 is about 1.4s.
+@export var max_hp: float = 2.0
+@export var hardness: float = 0.7
+@export var tier: int = 2
 @export var yield_amount: int = 6
 
-## Total drill units to break it. One unit is the same measure the terrain uses
-## for a full-strength carve, so hp 3 means "about three dirt-cells of effort".
-@export var max_hp: float = 4.0
-## What the drill feels while cutting it — same scale as terrain hardness.
-@export var hardness: float = 0.9
-@export var tier: int = 2
+# --- geode stats ---
+## Applied automatically when material_id matches geode. Keeping both stat sets
+## on the deposit means the terrain spawner only has to say WHICH it is — it
+## was previously overriding hp and hardness in code, so tuning the scene
+## silently did nothing for geodes.
+@export var geode_hp: float = 4.0
+@export var geode_hardness: float = 1.0
+@export var geode_tier: int = 2
+@export var geode_yield: int = 3
 
+# --- presentation ---
 @export var shake_strength: float = 1.6
-@export var pop_time: float = 0.28
+@export var pop_time: float = 0.2
 
 ## Both art variants live on the deposit so the spawner only has to set
 ## material_id — the node picks its own appearance.
@@ -58,6 +69,12 @@ func _first_child_of(type_name: String) -> Node:
 
 
 func _ready() -> void:
+	# Swap to the geode stat set before anything reads them.
+	if material_id == geode_material_id:
+		max_hp = geode_hp
+		hardness = geode_hardness
+		tier = geode_tier
+		yield_amount = geode_yield
 	hp = max_hp
 
 	if _sprite == null or _shape == null:
