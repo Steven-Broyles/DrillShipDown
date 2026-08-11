@@ -38,8 +38,20 @@ const MAT_COLOR := [
 	Color(0.41, 0.33, 0.20), Color(0.48, 0.34, 0.21), Color(0.55, 0.31, 0.23),
 	Color(0.70, 0.58, 0.40), Color(0.33, 0.36, 0.42), Color(0.49, 0.49, 0.53),
 	Color(0.24, 0.23, 0.28), Color(0.19, 0.16, 0.18), Color(0.12, 0.13, 0.17),
-	Color(0.77, 0.29, 0.11), Color(0.27, 0.24, 0.23), Color(0.23, 0.20, 0.29),
+	Color(0.77, 0.29, 0.11),
+	# Ore and geode were within a couple of hundredths of basalt, which made
+	# them invisible against the deep bands. Valuables should read at a glance
+	# and from off-centre — saturation is doing the work, not brightness.
+	Color(0.86, 0.68, 0.24),        # ore   — gold, matches icon_ore
+	Color(0.42, 0.83, 0.80),        # geode — crystal cyan, matches icon_geode
 ]
+
+## Cargo yielded per unit of material drilled, BEFORE `cargo_scale`.
+## Ore and geode are now 0: valuables are discrete OreDeposit objects with hit
+## points, not a material you grind out of the wall. The ore/geode-coloured
+## rock still generates — it reads as a trace vein that signposts where the
+## real deposits are, which gives prospecting something to follow.
+const MAT_CARGO := [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
 const MAT_HARDNESS := [0.1, 0.2, 0.4, 0.6, 1.0, 1.5, 1.8, 2.3, -1.0, 0.3, 0.6, 0.8]
 const MAT_TIER     := [0,   0,   1,   1,   2,   2,   3,   4,   9,    1,   2,   2  ]
@@ -62,6 +74,25 @@ const MAT_TIER     := [0,   0,   1,   1,   2,   2,   3,   4,   9,    1,   2,   2
 ## field isolates boring from that entirely.
 @export var caves_enabled: bool = false
 @export var cave_sharpness: float = 4.0 # higher = harder cave edges
+
+## Ore/geode pocket shape. LOWER frequency = larger, chunkier deposits.
+## LOWER threshold = more of them. The defaults produced thin scattered caps
+## because only the noise peaks cleared the cut — worth tuning now that
+## valuables are actually visible.
+@export var vein_frequency: float = 0.02
+@export var vein_threshold: float = 0.55
+@export var geode_threshold: float = 0.68
+## Cargo per unit of density removed, for any material with MAT_CARGO > 0.
+## All zero currently — valuables are OreDeposit nodes now.
+@export var cargo_scale: float = 0.15
+
+# --- deposits ---
+@export var deposit_scene: PackedScene
+## One deposit is considered per block of this many cells, at the local peak of
+## the vein noise. Larger = sparser and more spread out.
+@export var deposit_spacing: int = 24
+@export var deposit_threshold: float = 0.45
+@export var deposit_surface_margin: int = 24   # none this close to the top
 
 # --- regrowth ---
 @export var regrow_enabled: bool = false  # off by default while isolating carve
@@ -174,7 +205,7 @@ func generate() -> void:
 
 	_vein.seed = world_seed + 991
 	_vein.noise_type = FastNoiseLite.TYPE_SIMPLEX
-	_vein.frequency = 0.05
+	_vein.frequency = vein_frequency
 
 	_density.resize((width + 1) * (depth + 1))
 	_target.resize((width + 1) * (depth + 1))
@@ -199,6 +230,7 @@ func generate() -> void:
 		carve(_ship.global_position, start_pocket_radius, 1.0)
 		_damaged.clear()        # the launch pocket is permanent, not a scar
 
+	_spawn_deposits()
 	_rebuild_all_chunks()
 	_redraw_all_tiles()
 	queue_redraw()
@@ -232,17 +264,71 @@ func _gen_density(x: int, y: int) -> float:
 	return minf(d, surface)
 
 
+## One deposit per spacing-sized block, placed at that block's strongest vein
+## reading. Scanning for a local peak rather than thresholding every cell keeps
+## them well separated instead of clumping wherever the noise happens to be high.
+func _spawn_deposits() -> void:
+	if deposit_scene == null:
+		return
+
+	for by in range(sky_cells + deposit_surface_margin, depth - 1, deposit_spacing):
+		for bx in range(0, width, deposit_spacing):
+			var best := -2.0
+			var best_x := -1
+			var best_y := -1
+			for y in range(by, mini(by + deposit_spacing, depth)):
+				for x in range(bx, mini(bx + deposit_spacing, width)):
+					var v := _vein.get_noise_2d(float(x), float(y))
+					if v > best:
+						best = v
+						best_x = x
+						best_y = y
+
+			if best < deposit_threshold or best_x < 0:
+				continue
+
+			var node := deposit_scene.instantiate()
+			node.position = Vector2((best_x + 0.5) * cell_size, (best_y + 0.5) * cell_size)
+			# Geodes deeper down, ore above — matches the material bands.
+			if best_y > 120 and best > geode_threshold:
+				node.material_id = Mat.GEODE
+				node.yield_amount = 3
+				node.max_hp = 7.0
+				node.hardness = 1.2
+			else:
+				node.material_id = Mat.ORE
+			add_child(node)
+
+			# Hollow a small pocket so the deposit sits in rock rather than
+			# being fully embedded in solid density it can never be reached in.
+			_clear_around(best_x, best_y, 5)
+
+
+func _clear_around(cx: int, cy: int, reach: int) -> void:
+	for dy in range(-reach, reach + 1):
+		for dx in range(-reach, reach + 1):
+			var sx := cx + dx
+			var sy := cy + dy
+			if sx < 0 or sy < 0 or sx > width or sy > depth:
+				continue
+			if Vector2(dx, dy).length() > reach:
+				continue
+			var i := _sidx(sx, sy)
+			_density[i] = minf(_density[i], 0.0)
+			_target[i] = 0.0        # stays open; regrowth won't seal it
+
+
 func _gen_material(x: int, y: int) -> int:
 	if _gate_at(y):
 		return Mat.GATE_ROCK
 
 	var m := _band_material(y)
-	var v := _vein.get_noise_2d(float(x) * 1.7, float(y) * 1.7)
-	if v > 0.62:
+	var v := _vein.get_noise_2d(float(x), float(y))
+	if v > vein_threshold:
 		if y > 300:
 			m = Mat.MAGMA
 		elif y > 120:
-			m = Mat.GEODE if v > 0.72 else Mat.ORE
+			m = Mat.GEODE if v > geode_threshold else Mat.ORE
 		else:
 			m = Mat.ORE
 	return m
@@ -284,13 +370,20 @@ func sample(global_pos: Vector2) -> Dictionary:
 		"hardness": MAT_HARDNESS[m],
 		"tier": MAT_TIER[m],
 		"material": m,
+		"cargo": MAT_CARGO[m],
 	}
 
 
 ## strength 1.0 removes a full disc in one call (the old behaviour).
 ## Small per-frame values erode the rock gradually instead, which is what
 ## makes drilling continuous rather than break-lurch-break.
-func carve(center_global: Vector2, radius: float, strength: float = 1.0) -> void:
+## Returns a harvest: material index -> density actually removed, for materials
+## worth banking. Collection has to be measured by VOLUME DESTROYED, not by a
+## point sample at the drill tip — the bit removes a disc many cells across, so
+## a point sample credits whatever one cell happened to be under it and misses
+## everything else in the blast.
+func carve(center_global: Vector2, radius: float, strength: float = 1.0) -> Dictionary:
+	var harvest := {}
 	var c := to_local(center_global)
 	var reach := int(ceil(radius / float(cell_size))) + 1
 	var ox := int(floor(c.x / cell_size))
@@ -310,7 +403,8 @@ func carve(center_global: Vector2, radius: float, strength: float = 1.0) -> void
 			# Gate rock never yields. Check the cell this sample belongs to.
 			var mcx := clampi(sx, 0, width - 1)
 			var mcy := clampi(sy, 0, depth - 1)
-			if MAT_HARDNESS[_material[_cidx(mcx, mcy)]] < 0.0:
+			var m := int(_material[_cidx(mcx, mcy)])
+			if MAT_HARDNESS[m] < 0.0:
 				continue
 
 			# Soft radial falloff: full removal at the centre, tapering to
@@ -328,9 +422,15 @@ func carve(center_global: Vector2, radius: float, strength: float = 1.0) -> void
 			_density[i] = maxf(0.0, before - falloff * strength)
 
 			if not is_equal_approx(before, _density[i]):
+				# Credit the material by how much of it genuinely went away.
+				if MAT_CARGO[m] > 0:
+					harvest[m] = float(harvest.get(m, 0.0)) \
+							+ (before - _density[i]) * MAT_CARGO[m] * cargo_scale
 				_damaged[i] = _now
 				_mark_dirty_sample(sx, sy)
 				_dirty_tile_at_sample(sx, sy)     # keep the tile view in sync
+
+	return harvest
 
 
 # =====================================================================

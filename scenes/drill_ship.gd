@@ -1,6 +1,6 @@
 extends CharacterBody2D
 
-signal drilled(global_pos: Vector2, hardness: float, tier: int)
+signal drilled(global_pos: Vector2, hardness: float, tier: int, material: int)
 
 # --- movement ---
 @export var drive_speed: float = 170.0
@@ -64,6 +64,24 @@ var fuel: float = 0.0
 
 signal fuel_changed(current: float, maximum: float)
 signal fuel_empty()
+
+# --- cargo ---
+## Capacity is what makes hauling to an elevator a decision rather than a
+## formality — without it there is never a reason to go back up.
+@export var max_cargo: int = 40
+## Cargo units per cell-equivalent of valuable material destroyed. Raise this
+## if ore feels stingy relative to how much of it you're visibly removing.
+@export var cargo_per_cell: float = 0.15
+
+var cargo: Dictionary = {}      # material index -> count
+var cargo_used: int = 0
+
+var _harvest_frac: Dictionary = {}
+
+signal cargo_changed(hold: Dictionary, used: int, capacity: int)
+signal hold_full()
+
+var _hold_full: bool = false
 
 # --- heat (stub) ---
 @export var heat: float = 0.0
@@ -253,6 +271,58 @@ func _update_tilt(delta: float) -> void:
 	pivot.rotation = lerp_angle(pivot.rotation, tilt_index * deg_to_rad(tilt_step_deg), pivot_turn_speed * delta)
 
 
+## --- cargo ---------------------------------------------------------------
+## The hold is a material index -> count map. The ship deliberately does not
+## know what any material IS; the terrain reports how much cargo a material
+## yields and the ship banks it. Adding a new valuable is one table entry in
+## density_terrain.gd, with no change here.
+
+## Harvest arrives as fractions of a cell's worth of material, every frame.
+## Accumulate and bank whole units, so the hold ticks up in readable steps
+## instead of showing a running decimal.
+func _bank(harvest: Dictionary) -> void:
+	if harvest.is_empty():
+		return
+	for m in harvest:
+		var mat: int = m
+		# No scaling here — each source decides its own economy. The terrain
+		# returns pre-scaled fractions of a cargo unit; a deposit returns a
+		# whole payout in one go.
+		_harvest_frac[mat] = float(_harvest_frac.get(mat, 0.0)) + float(harvest[m])
+		var whole := int(floor(_harvest_frac[mat]))
+		if whole > 0:
+			_harvest_frac[mat] -= whole
+			_collect(mat, whole)
+
+
+func _collect(mat: int, amount: int) -> void:
+	if mat < 0 or amount <= 0:
+		return
+	var space := max_cargo - cargo_used
+	if space <= 0:
+		if not _hold_full:
+			_hold_full = true
+			hold_full.emit()
+		return
+	var taken := mini(amount, space)
+	cargo[mat] = int(cargo.get(mat, 0)) + taken
+	cargo_used += taken
+	_hold_full = cargo_used >= max_cargo
+	cargo_changed.emit(cargo, cargo_used, max_cargo)
+	if _hold_full:
+		hold_full.emit()
+
+
+## Empty the hold. What resource elevators and settlements will call.
+func unload() -> Dictionary:
+	var manifest := cargo.duplicate()
+	cargo.clear()
+	cargo_used = 0
+	_hold_full = false
+	cargo_changed.emit(cargo, cargo_used, max_cargo)
+	return manifest
+
+
 func _spend_fuel(amount: float) -> void:
 	if amount <= 0.0 or fuel <= 0.0:
 		return
@@ -352,12 +422,14 @@ func _drill(delta: float) -> void:
 	# single full-strength carve — it just arrives smoothly, so the rock
 	# recedes and the ship advances at a steady speed.
 	var rate := _dig_rate(rock_tier)
-	terrain.carve(probe, bore_radius, (rate / maxf(hardness, 0.01)) * delta * carve_gain)
+	# Cargo comes back from the carve, measured by material actually destroyed
+	# across the whole disc — not by what the drill tip happened to be touching.
+	_bank(terrain.carve(probe, bore_radius, (rate / maxf(hardness, 0.01)) * delta * carve_gain))
 
 	# Progress now only exists to fire one "unit drilled" event per hardness
 	# worth of material, for fuel burn and ore collection later.
 	_dig_progress += rate * delta
 	if _dig_progress >= hardness:
 		_spend_fuel(fuel_per_unit * (1.0 + hardness * fuel_hardness_scale))
-		drilled.emit(probe, hardness, rock_tier)
+		drilled.emit(probe, hardness, rock_tier, int(info.get("material", -1)))
 		_dig_progress = 0.0
